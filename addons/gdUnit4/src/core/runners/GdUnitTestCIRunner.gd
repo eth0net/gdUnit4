@@ -379,7 +379,10 @@ func init_gd_unit() -> void:
 			return
 
 	var script_error_collector := GdUnitScriptErrorCollector.new()
+	var bench_t0 := Time.get_ticks_usec()
 	_test_cases = discover_tests()
+	if OS.get_environment("GDUNIT_BENCH") == "1":
+		prints("##BENCH## discovery_usec=%d tests=%d" % [Time.get_ticks_usec() - bench_t0, _test_cases.size()])
 
 	# Check for script errors captured during discovery
 	if script_error_collector.has_errors():
@@ -402,16 +405,33 @@ func discover_tests() -> Array[GdUnitTestCase]:
 	var gdunit_test_discover_added := GdUnitSignals.instance().gdunit_test_discover_added
 
 	_test_cases = _runner_config.test_cases()
+	if OS.get_environment("GDUNIT_DISCOVER_CACHE") == "1":
+		GdUnitTestDiscoverer.discover_tests_cached(_included_tests, func(test: GdUnitTestCase) -> void:
+			if not is_skipped(test):
+				_test_cases.append(test)
+				gdunit_test_discover_added.emit(test)
+		)
+		return _test_cases
+
 	var scanner := GdUnitTestSuiteScanner.new()
+	var bench := OS.get_environment("GDUNIT_BENCH") == "1"
+	var bench_scan_usec := 0
+	var bench_discover_usec := 0
 	for path in _included_tests:
+		var bench_scan_t0 := Time.get_ticks_usec()
 		var scripts := scanner.scan(path)
+		bench_scan_usec += Time.get_ticks_usec() - bench_scan_t0
 		for script in scripts:
+			var bench_disc_t0 := Time.get_ticks_usec()
 			GdUnitTestDiscoverer.discover_tests(script, func(test: GdUnitTestCase) -> void:
 				if not is_skipped(test):
 					#_console.println_message("discoverd %s" % test.display_name)
 					_test_cases.append(test)
 					gdunit_test_discover_added.emit(test)
 			)
+			bench_discover_usec += Time.get_ticks_usec() - bench_disc_t0
+	if bench:
+		prints("##BENCH## scan_usec=%d discover_usec=%d suites=%d" % [bench_scan_usec, bench_discover_usec, _test_cases.size()])
 
 	return _test_cases
 

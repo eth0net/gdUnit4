@@ -120,6 +120,75 @@ static func discover_tests(source_script: Script, discover_sink := default_disco
 			discover_sink.call(test_case)
 
 
+## Discovers tests across [param included_paths], serving unchanged files from a persistent[br]
+## modification-time cache so their scripts are never loaded. Discovered tests are passed[br]
+## to [param discover_sink]. This is the cache-aware counterpart to the scan/discover flow.
+static func discover_tests_cached(included_paths: PackedStringArray, discover_sink := default_discover_sink) -> void:
+	var cache := GdUnitDiscoverCache.new()
+	cache.load_cache()
+	var scanner := GdUnitTestSuiteScanner.new()
+	scanner.prescan_testsuite_classes()
+
+	for root in included_paths:
+		var files := PackedStringArray()
+		if FileAccess.file_exists(root):
+			@warning_ignore("return_value_discarded")
+			files.append(root)
+		else:
+			collect_test_files(root, files)
+		for source_file in files:
+			var mtime := int(FileAccess.get_modified_time(source_file))
+			if cache.is_valid(source_file, mtime):
+				for test_case in cache.get_tests(source_file):
+					discover_sink.call(test_case)
+			else:
+				var tests := discover_file(scanner, source_file)
+				cache.put(source_file, mtime, tests)
+				for test_case in tests:
+					discover_sink.call(test_case)
+	cache.save_cache()
+
+
+## Loads [param source_file] and returns its test cases, or an empty array when it is not a suite.
+static func discover_file(scanner: GdUnitTestSuiteScanner, source_file: String) -> Array[GdUnitTestCase]:
+	var script := scanner.discover_suite_script(source_file)
+	if script == null:
+		return []
+	var tests: Array[GdUnitTestCase] = []
+	discover_tests(script, func(test_case: GdUnitTestCase) -> void:
+		tests.append(test_case)
+	)
+	return tests
+
+
+## Recursively collects supported script paths under [param root_path] without loading them,[br]
+## honoring [code].gdignore[/code] files and the scanner's excluded directories.
+static func collect_test_files(root_path: String, collected: PackedStringArray) -> PackedStringArray:
+	if GdUnitTestSuiteScanner.exclude_scan_directories.has(root_path):
+		return collected
+	var dir := DirAccess.open(root_path)
+	if dir == null:
+		return collected
+	if dir.file_exists(".gdignore"):
+		return collected
+	if dir.list_dir_begin() != OK:
+		return collected
+	var file_name := dir.get_next()
+	while file_name != "":
+		var current := dir.get_current_dir()
+		var path := current + file_name if current.ends_with("/") else current + "/" + file_name
+		if dir.current_is_dir():
+			@warning_ignore("return_value_discarded")
+			collect_test_files(path, collected)
+		else:
+			var ext := path.get_extension()
+			if ext == "gd" or (ext == "cs" and ClassDB.class_exists("CSharpScript")):
+				@warning_ignore("return_value_discarded")
+				collected.append(path)
+		file_name = dir.get_next()
+	return collected
+
+
 static func discover_tests_from_gd_script(script: GDScript) -> Array[GdUnitTestCase]:
 	# Filter by test case only
 	var test_names: Array[String] = []

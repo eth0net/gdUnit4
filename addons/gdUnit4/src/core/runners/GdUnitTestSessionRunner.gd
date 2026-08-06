@@ -127,7 +127,10 @@ func _process(_delta: float) -> void:
 			var result := await _hooks.execute_startup(_test_session)
 			if result.is_error():
 				push_error(result.error_message())
+			var bench_exec_t0 := Time.get_ticks_usec()
 			await _executor.run_and_wait(_test_cases)
+			if OS.get_environment("GDUNIT_BENCH") == "1":
+				prints("##BENCH## execution_usec=%d" % [Time.get_ticks_usec() - bench_exec_t0])
 			result = await _hooks.execute_shutdown(_test_session)
 			if result.is_error():
 				push_error(result.error_message())
