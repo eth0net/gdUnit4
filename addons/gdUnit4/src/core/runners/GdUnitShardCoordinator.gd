@@ -5,6 +5,8 @@ class_name GdUnitShardCoordinator
 extends Node
 
 const CHILD_SCRIPT := "res://addons/gdUnit4/bin/GdUnitCmdTool.gd"
+# Persisted suite -> last-run duration (ms), used to balance shards across runs.
+const WEIGHTS_FILE := "user://gdunit_shard_weights.json"
 
 var _shards := 0
 var _include_paths: Array[String] = []
@@ -33,7 +35,7 @@ func _run() -> int:
 		prints("No test suites found for", _include_paths)
 		return 0
 	var shard_count: int = mini(_shards, suites.size())
-	var buckets := _partition(suites, shard_count)
+	var buckets := _partition(suites, shard_count, _load_weights())
 	var report_dir := "%s/report_%d" % [_report_base, _next_report_index(_report_base)]
 	prints("Running %d test suites across %d shards -> %s" % [suites.size(), shard_count, report_dir])
 
@@ -41,6 +43,7 @@ func _run() -> int:
 	var manifest := _build_manifest(shard_results, buckets, report_dir)
 	_write_manifest(report_dir, manifest)
 	_merge_reports(report_dir, manifest)
+	_update_weights(manifest)
 	var codes: Array[int] = []
 	for entry: Dictionary in manifest:
 		codes.append(entry["exit_code"])
@@ -164,14 +167,98 @@ func _discover_suites() -> Array[String]:
 	return suites
 
 
-func _partition(suites: Array[String], shard_count: int) -> Array:
+# Balances suites across shards by expected duration using a greedy longest-processing-time fit:
+# heaviest suites first, each assigned to the currently least-loaded shard. Unknown suites use the
+# average known weight, so with no history (empty weights) this degrades to a balanced-by-count split.
+func _partition(suites: Array[String], shard_count: int, weights: Dictionary) -> Array:
+	var default_weight := _average_weight(weights)
+	var order := suites.duplicate()
+	order.sort_custom(func(left: String, right: String) -> bool:
+		var left_weight := float(weights.get(left, default_weight))
+		var right_weight := float(weights.get(right, default_weight))
+		if left_weight != right_weight:
+			return left_weight > right_weight
+		return left < right)
+
 	var buckets: Array = []
+	var loads: Array[float] = []
 	for _index in shard_count:
 		buckets.append([] as Array[String])
-	for index in suites.size():
-		var bucket: Array[String] = buckets[index % shard_count]
-		bucket.append(suites[index])
+		loads.append(0.0)
+	for suite: String in order:
+		var target := _least_loaded(loads)
+		var bucket: Array[String] = buckets[target]
+		bucket.append(suite)
+		loads[target] += float(weights.get(suite, default_weight))
 	return buckets
+
+
+func _average_weight(weights: Dictionary) -> float:
+	if weights.is_empty():
+		return 1.0
+	var sum := 0.0
+	for weight: float in weights.values():
+		sum += weight
+	return sum / weights.size()
+
+
+func _least_loaded(loads: Array) -> int:
+	var index := 0
+	for candidate in loads.size():
+		if loads[candidate] < loads[index]:
+			index = candidate
+	return index
+
+
+func _load_weights() -> Dictionary:
+	if not FileAccess.file_exists(WEIGHTS_FILE):
+		return {}
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(WEIGHTS_FILE))
+	return parsed if parsed is Dictionary else {}
+
+
+# Records each suite's latest duration (ms) from the shard reports so the next run can balance better.
+func _update_weights(manifest: Array) -> void:
+	var weights := _load_weights()
+	for entry: Dictionary in manifest:
+		var result_file: String = entry["result_file"]
+		if result_file.is_empty():
+			continue
+		var durations := _parse_suite_durations(result_file)
+		for suite_path: String in durations:
+			weights[suite_path] = durations[suite_path]
+	var file := FileAccess.open(WEIGHTS_FILE, FileAccess.WRITE)
+	if file != null:
+		file.store_string(JSON.stringify(weights))
+
+
+func _parse_suite_durations(result_file: String) -> Dictionary:
+	var durations: Dictionary = {}
+	var content := FileAccess.get_file_as_string(result_file)
+	var from := 0
+	while true:
+		var start := content.find("<testsuite ", from)
+		if start == -1:
+			break
+		var end := content.find(">", start)
+		if end == -1:
+			break
+		var tag := content.substr(start, end - start + 1)
+		from = end + 1
+		var suite_path := "res://%s/%s.gd" % [_attr(tag, "package"), _attr(tag, "name")]
+		if FileAccess.file_exists(suite_path):
+			durations[suite_path] = float(_attr(tag, "time")) * 1000.0
+	return durations
+
+
+func _attr(tag: String, name: String) -> String:
+	var key := '%s="' % name
+	var start := tag.find(key)
+	if start == -1:
+		return ""
+	start += key.length()
+	var end := tag.find('"', start)
+	return "" if end == -1 else tag.substr(start, end - start)
 
 
 func _find_result_file(shard_dir: String) -> String:

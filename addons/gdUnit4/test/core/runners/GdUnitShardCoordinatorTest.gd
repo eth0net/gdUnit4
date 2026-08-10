@@ -10,14 +10,24 @@ func _coordinator() -> GdUnitShardCoordinator:
 	return auto_free(GdUnitShardCoordinator.new())
 
 
-func test_partition_distributes_suites_round_robin() -> void:
+func test_partition_without_weights_balances_by_count() -> void:
 	var suites: Array[String] = ["a", "b", "c", "d", "e"]
-	var buckets := _coordinator()._partition(suites, 3)
+	var buckets := _coordinator()._partition(suites, 3, {})
 
 	assert_int(buckets.size()).is_equal(3)
 	assert_array(buckets[0]).contains_exactly(["a", "d"])
 	assert_array(buckets[1]).contains_exactly(["b", "e"])
 	assert_array(buckets[2]).contains_exactly(["c"])
+
+
+func test_partition_balances_by_weight() -> void:
+	var suites: Array[String] = ["a", "b", "c", "d"]
+	var weights := {"a": 10.0, "b": 1.0, "c": 1.0, "d": 1.0}
+	var buckets := _coordinator()._partition(suites, 2, weights)
+
+	# the one heavy suite runs alone, the three light suites share the other shard
+	assert_array(buckets[0]).contains_exactly(["a"])
+	assert_array(buckets[1]).contains_exactly(["b", "c", "d"])
 
 
 func test_aggregate_exit_code_all_success() -> void:
