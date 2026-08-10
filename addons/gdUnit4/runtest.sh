@@ -51,6 +51,15 @@ if echo "$GODOT_VERSION" | grep -i "mono" > /dev/null; then
     echo "done $?"
 fi
 
+# When --shards N is present, run the parallel coordinator instead. It spawns N child
+# processes (each a normal GdUnitCmdTool run on a subset of suites) and merges the reports.
+if echo " $filtered_args " | grep -q -- " --shards "; then
+    "$godot_binary" --path . -s -d --remote-debug tcp://127.0.0.1:0 res://addons/gdUnit4/bin/GdUnitCmdShardCoordinator.gd $filtered_args
+    exit_code=$?
+    echo "Run tests (parallel) ends with $exit_code"
+    exit $exit_code
+fi
+
 # Run the tests with the filtered arguments.
 # --remote-debug tcp://127.0.0.1:0 prevents Godot from activating its local interactive
 # CLI debugger, which would cause an endless 'debug>' loop on script parse errors.
