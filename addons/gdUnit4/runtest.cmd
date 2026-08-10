@@ -51,6 +51,16 @@ if !errorlevel! equ 0 (
     echo done !errorlevel!
 )
 
+:: When --shards is present, run the parallel coordinator instead. It spawns child processes
+:: (each a normal GdUnitCmdTool run on a subset of suites) and merges the reports.
+echo !filtered_args! | findstr /C:"--shards" > nul
+if !ERRORLEVEL! == 0 (
+    "!godot_binary!" --path . -s -d --remote-debug tcp://127.0.0.1:0 res://addons/gdUnit4/bin/GdUnitCmdShardCoordinator.gd !filtered_args!
+    set exit_code=!ERRORLEVEL!
+    echo Run tests ^(parallel^) ends with !exit_code!
+    exit /b !exit_code!
+)
+
 :: Run the tests with the filtered arguments.
 :: --remote-debug tcp://127.0.0.1:0 prevents Godot from activating its local interactive
 :: CLI debugger, which would cause an endless 'debug>' loop on script parse errors.

@@ -23,9 +23,7 @@ func _execute() -> void:
 
 func _run() -> int:
 	_parse_args()
-	if _shards < 2:
-		push_error("GdUnitShardCoordinator: --shards must be >= 2")
-		return 100
+	_shards = _resolve_shard_count()
 	if _report_base.is_empty():
 		_report_base = "res://reports"
 	_headless = DisplayServer.get_name() == "headless"
@@ -39,12 +37,27 @@ func _run() -> int:
 	var report_dir := "%s/report_%d" % [_report_base, _next_report_index(_report_base)]
 	prints("Running %d test suites across %d shards -> %s" % [suites.size(), shard_count, report_dir])
 
-	var codes := _run_shards(buckets, report_dir)
-	_merge_reports(shard_count, report_dir)
+	var shard_results := _run_shards(buckets, report_dir)
+	var manifest := _build_manifest(shard_results, buckets, report_dir)
+	_write_manifest(report_dir, manifest)
+	_merge_reports(report_dir, manifest)
+	var codes: Array[int] = []
+	for entry: Dictionary in manifest:
+		codes.append(entry["exit_code"])
 	return _aggregate_exit_code(codes)
 
 
-func _run_shards(buckets: Array, report_dir: String) -> Array[int]:
+# Resolves the shard count: an explicit --shards wins, then the project setting, then the CPU count.
+func _resolve_shard_count() -> int:
+	if _shards >= 2:
+		return _shards
+	var configured := GdUnitSettings.get_parallel_shards()
+	if configured >= 2:
+		return configured
+	return maxi(2, OS.get_processor_count())
+
+
+func _run_shards(buckets: Array, report_dir: String) -> Array:
 	var godot := OS.get_executable_path()
 	var project_root := ProjectSettings.globalize_path("res://")
 	var threads: Array[Thread] = []
@@ -52,17 +65,46 @@ func _run_shards(buckets: Array, report_dir: String) -> Array[int]:
 		var args := _child_args(project_root, buckets[shard_index], "%s/shard_%d" % [report_dir, shard_index])
 		var thread := Thread.new()
 		@warning_ignore("return_value_discarded")
-		thread.start(func() -> int:
+		thread.start(func() -> Dictionary:
+			var started := Time.get_unix_time_from_system()
 			var output := []
-			return OS.execute(godot, args, output, true))
+			var code := OS.execute(godot, args, output, true)
+			return {"code": code, "started": started, "ended": Time.get_unix_time_from_system()})
 		threads.append(thread)
 
-	var codes: Array[int] = []
+	var results: Array = []
 	for shard_index in threads.size():
-		var code: int = threads[shard_index].wait_to_finish()
-		prints("Shard %d finished with exit code %d" % [shard_index, code])
-		codes.append(code)
-	return codes
+		var result: Dictionary = threads[shard_index].wait_to_finish()
+		prints("Shard %d finished with exit code %d in %.2fs" % [shard_index, result["code"], result["ended"] - result["started"]])
+		results.append(result)
+	return results
+
+
+# Builds the per-shard run manifest: which suites ran where, wall-clock timing and the exit code.
+func _build_manifest(shard_results: Array, buckets: Array, report_dir: String) -> Array:
+	var manifest: Array = []
+	for shard_index in shard_results.size():
+		var result: Dictionary = shard_results[shard_index]
+		manifest.append({
+			"shard": shard_index,
+			"suites": buckets[shard_index],
+			"started": result["started"],
+			"ended": result["ended"],
+			"duration": result["ended"] - result["started"],
+			"exit_code": result["code"],
+			"result_file": _find_result_file("%s/shard_%d" % [report_dir, shard_index]),
+		})
+	return manifest
+
+
+func _write_manifest(report_dir: String, manifest: Array) -> void:
+	@warning_ignore("return_value_discarded")
+	DirAccess.make_dir_recursive_absolute(report_dir)
+	var manifest_file := "%s/shards.json" % report_dir
+	var file := FileAccess.open(manifest_file, FileAccess.WRITE)
+	if file != null:
+		file.store_string(JSON.stringify(manifest, "\t"))
+		prints("Shard manifest:", manifest_file)
 
 
 func _child_args(project_root: String, suites: Array, shard_dir: String) -> PackedStringArray:
@@ -85,17 +127,19 @@ func _child_args(project_root: String, suites: Array, shard_dir: String) -> Pack
 	return args
 
 
-func _merge_reports(shard_count: int, report_dir: String) -> void:
+func _merge_reports(report_dir: String, manifest: Array) -> void:
 	var shard_result_files: Array[String] = []
-	for shard_index in shard_count:
-		var result_file := _find_result_file("%s/shard_%d" % [report_dir, shard_index])
-		if not result_file.is_empty():
-			shard_result_files.append(result_file)
+	for entry: Dictionary in manifest:
+		if not entry["result_file"].is_empty():
+			shard_result_files.append(entry["result_file"])
 	var merged := JUnitXmlReportMerger.merge(shard_result_files, report_dir)
 	if merged.is_empty():
 		push_warning("GdUnitShardCoordinator: no shard reports found to merge")
-	else:
-		prints("Merged JUnit report:", merged)
+		return
+	prints("Merged JUnit report:", merged)
+	var merged_html := GdUnitHtmlReportMerger.merge(report_dir, manifest)
+	if not merged_html.is_empty():
+		prints("Merged HTML report:", merged_html)
 
 
 func _aggregate_exit_code(codes: Array[int]) -> int:
