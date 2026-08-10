@@ -47,8 +47,6 @@ func _execute(context :GdUnitExecutionContext) -> void:
 			context.restore_project_settings()
 		GdUnitMemoryObserver.unguard_instance(context.test_suite.__awaiter)
 
-	await (Engine.get_main_loop() as SceneTree).process_frame
-
 
 # clones a test suite and moves the test cases to new instance
 func clone_test_suite(test_suite :GdUnitTestSuite) -> GdUnitTestSuite:
