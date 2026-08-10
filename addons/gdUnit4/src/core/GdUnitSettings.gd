@@ -24,6 +24,7 @@ const TEST_FLAKY_MAX_RETRIES = GROUP_TEST + "/flaky_max_retries"
 const TEST_RERUN_UNTIL_FAILURE_RETRIES = GROUP_TEST + "/rerun_until_failure_retries"
 const TEST_PROJECT_SETTINGS_AUTO_SAVE = GROUP_TEST + "/project_settings_auto_save"
 const TEST_PARALLEL_SHARDS = GROUP_TEST + "/parallel_shards"
+const TEST_MAX_PARALLEL_PROCESSES = GROUP_TEST + "/max_parallel_processes"
 
 
 # Report Setiings
@@ -134,7 +135,8 @@ static func setup() -> void:
 	create_property_if_need(TEST_FLAKY_MAX_RETRIES, 3, "Sets the number of retries for rerunning a flaky test")
 	create_property_if_need(TEST_RERUN_UNTIL_FAILURE_RETRIES, 10, "The number of reruns until the test fails.")
 	create_property_if_need(TEST_PROJECT_SETTINGS_AUTO_SAVE, true, "Save and restore your project settings around each test execution")
-	create_property_if_need(TEST_PARALLEL_SHARDS, 0, "Number of parallel processes for sharded CLI runs (0 = auto, uses the CPU count)")
+	create_property_if_need(TEST_PARALLEL_SHARDS, 0, "Number of shards to split test suites into for sharded CLI runs (0 = auto, uses the CPU count)")
+	create_property_if_need(TEST_MAX_PARALLEL_PROCESSES, 0, "Maximum shard processes to run at once (0 = auto, uses the CPU count)")
 	# report settings
 	create_property_if_need(REPORT_PUSH_ERRORS, false, "Report push_error() as failure")
 	create_property_if_need(REPORT_SCRIPT_ERRORS, true, "Report script errors as failure")
@@ -298,6 +300,10 @@ static func is_verbose_orphans() -> bool:
 
 static func get_parallel_shards() -> int:
 	return get_setting(TEST_PARALLEL_SHARDS, 0)
+
+
+static func get_max_parallel_processes() -> int:
+	return get_setting(TEST_MAX_PARALLEL_PROCESSES, 0)
 
 
 static func is_strict_number_type_compare() -> bool:

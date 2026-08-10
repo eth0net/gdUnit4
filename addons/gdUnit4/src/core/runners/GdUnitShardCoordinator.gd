@@ -39,7 +39,10 @@ func _run() -> int:
 	var report_dir := "%s/report_%d" % [_report_base, _next_report_index(_report_base)]
 	prints("Running %d test suites across %d shards -> %s" % [suites.size(), shard_count, report_dir])
 
-	var shard_results := _run_shards(buckets, report_dir)
+	var max_concurrent := _resolve_max_concurrent(shard_count)
+	if max_concurrent < shard_count:
+		prints("Limiting to %d concurrent shard processes" % max_concurrent)
+	var shard_results := _run_shards(buckets, report_dir, max_concurrent)
 	var manifest := _build_manifest(shard_results, buckets, report_dir)
 	_write_manifest(report_dir, manifest)
 	_merge_reports(report_dir, manifest)
@@ -60,26 +63,48 @@ func _resolve_shard_count() -> int:
 	return maxi(2, OS.get_processor_count())
 
 
-func _run_shards(buckets: Array, report_dir: String) -> Array:
+# Resolves how many shard processes may run at once: the project setting, then the CPU count,
+# never more than the shard count.
+func _resolve_max_concurrent(shard_count: int) -> int:
+	var configured := GdUnitSettings.get_max_parallel_processes()
+	var cap := configured if configured >= 1 else OS.get_processor_count()
+	return clampi(cap, 1, shard_count)
+
+
+# Runs the shards in a rolling pool so no more than [param max_concurrent] child processes run at once.
+func _run_shards(buckets: Array, report_dir: String, max_concurrent: int) -> Array:
 	var godot := OS.get_executable_path()
 	var project_root := ProjectSettings.globalize_path("res://")
-	var threads: Array[Thread] = []
-	for shard_index in buckets.size():
-		var args := _child_args(project_root, buckets[shard_index], "%s/shard_%d" % [report_dir, shard_index])
-		var thread := Thread.new()
-		@warning_ignore("return_value_discarded")
-		thread.start(func() -> Dictionary:
-			var started := Time.get_unix_time_from_system()
-			var output := []
-			var code := OS.execute(godot, args, output, true)
-			return {"code": code, "started": started, "ended": Time.get_unix_time_from_system()})
-		threads.append(thread)
-
 	var results: Array = []
-	for shard_index in threads.size():
-		var result: Dictionary = threads[shard_index].wait_to_finish()
-		prints("Shard %d finished with exit code %d in %.2fs" % [shard_index, result["code"], result["ended"] - result["started"]])
-		results.append(result)
+	results.resize(buckets.size())
+	var pending: Array[int] = []
+	for shard_index in buckets.size():
+		pending.append(shard_index)
+	var running: Dictionary = {}
+
+	while not pending.is_empty() or not running.is_empty():
+		while running.size() < max_concurrent and not pending.is_empty():
+			var shard_index: int = pending.pop_front()
+			var args := _child_args(project_root, buckets[shard_index], "%s/shard_%d" % [report_dir, shard_index])
+			var thread := Thread.new()
+			@warning_ignore("return_value_discarded")
+			thread.start(func() -> Dictionary:
+				var started := Time.get_unix_time_from_system()
+				var output := []
+				var code := OS.execute(godot, args, output, true)
+				return {"code": code, "started": started, "ended": Time.get_unix_time_from_system()})
+			running[shard_index] = thread
+
+		for shard_index: int in running.keys():
+			if not (running[shard_index] as Thread).is_alive():
+				var result: Dictionary = (running[shard_index] as Thread).wait_to_finish()
+				prints("Shard %d finished with exit code %d in %.2fs" % [shard_index, result["code"], result["ended"] - result["started"]])
+				results[shard_index] = result
+				@warning_ignore("return_value_discarded")
+				running.erase(shard_index)
+
+		if not running.is_empty():
+			OS.delay_msec(50)
 	return results
 
 

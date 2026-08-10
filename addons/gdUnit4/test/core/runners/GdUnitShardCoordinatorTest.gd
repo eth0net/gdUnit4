@@ -45,3 +45,11 @@ func test_aggregate_exit_code_failure_wins_over_warning() -> void:
 func test_aggregate_exit_code_unknown_code_is_error() -> void:
 	# a non-standard exit code (spawn failure / crash) is treated as an error
 	assert_int(_coordinator()._aggregate_exit_code([0, 1, 0])).is_equal(100)
+
+
+func test_resolve_max_concurrent_clamps_to_setting_and_shard_count() -> void:
+	ProjectSettings.set_setting(GdUnitSettings.TEST_MAX_PARALLEL_PROCESSES, 2)
+	var coordinator := _coordinator()
+
+	assert_int(coordinator._resolve_max_concurrent(10)).is_equal(2)
+	assert_int(coordinator._resolve_max_concurrent(1)).is_equal(1)
