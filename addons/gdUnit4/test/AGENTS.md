@@ -25,6 +25,20 @@ func after_test() -> void:
     pass
 ```
 
+**Parallel runs (`--shards`):** by default every suite is free to run in its own shard process. A suite
+that touches a shared external resource (a fixed network port, a shared file, an external service) can
+declare a shard group so all suites sharing that key run on the same shard, never concurrently:
+
+```gdscript
+extends GdUnitTestSuite
+
+# Suites with the same __shard_group key are pinned to one shard (serialized together).
+const __shard_group := "net:62222"
+```
+
+This is only needed for cross-process resource clashes — in-memory state (statics, singletons,
+autoloads, ProjectSettings) is already isolated because each shard is a separate process.
+
 **Test section grouping — use `#region` / `#endregion`:**
 
 Group related test functions into named regions instead of comment dividers.

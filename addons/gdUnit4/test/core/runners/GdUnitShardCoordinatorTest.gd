@@ -12,7 +12,7 @@ func _coordinator() -> GdUnitShardCoordinator:
 
 func test_partition_without_weights_balances_by_count() -> void:
 	var suites: Array[String] = ["a", "b", "c", "d", "e"]
-	var buckets := _coordinator()._partition(suites, 3, {})
+	var buckets := _coordinator()._partition(suites, 3, {}, {})
 
 	assert_int(buckets.size()).is_equal(3)
 	assert_array(buckets[0]).contains_exactly(["a", "d"])
@@ -23,11 +23,24 @@ func test_partition_without_weights_balances_by_count() -> void:
 func test_partition_balances_by_weight() -> void:
 	var suites: Array[String] = ["a", "b", "c", "d"]
 	var weights := {"a": 10.0, "b": 1.0, "c": 1.0, "d": 1.0}
-	var buckets := _coordinator()._partition(suites, 2, weights)
+	var buckets := _coordinator()._partition(suites, 2, weights, {})
 
 	# the one heavy suite runs alone, the three light suites share the other shard
 	assert_array(buckets[0]).contains_exactly(["a"])
 	assert_array(buckets[1]).contains_exactly(["b", "c", "d"])
+
+
+func test_partition_keeps_shard_group_on_one_shard() -> void:
+	var suites: Array[String] = ["a", "b", "c", "d"]
+	# a and c share a resource, so they must never run concurrently
+	var groups := {"a": "net", "c": "net"}
+	var buckets := _coordinator()._partition(suites, 3, {}, groups)
+
+	var shard_of := {}
+	for shard_index in buckets.size():
+		for suite: String in buckets[shard_index]:
+			shard_of[suite] = shard_index
+	assert_int(shard_of["a"]).is_equal(shard_of["c"])
 
 
 func test_aggregate_exit_code_all_success() -> void:

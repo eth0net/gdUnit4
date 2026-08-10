@@ -13,6 +13,8 @@ var _include_paths: Array[String] = []
 var _report_base := ""
 var _verbose := false
 var _headless := false
+# suite path -> shard group key; suites sharing a key are pinned to the same shard.
+var _suite_groups: Dictionary = {}
 
 
 func _ready() -> void:
@@ -35,9 +37,14 @@ func _run() -> int:
 		prints("No test suites found for", _include_paths)
 		return 0
 	var shard_count: int = mini(_shards, suites.size())
-	var buckets := _partition(suites, shard_count, _load_weights())
+	var buckets := _partition(suites, shard_count, _load_weights(), _suite_groups)
+	# Grouping can collapse suites into fewer units than shards; drop the empty ones.
+	buckets = buckets.filter(func(bucket: Array) -> bool: return not bucket.is_empty())
+	shard_count = buckets.size()
 	var report_dir := "%s/report_%d" % [_report_base, _next_report_index(_report_base)]
 	prints("Running %d test suites across %d shards -> %s" % [suites.size(), shard_count, report_dir])
+	if not _suite_groups.is_empty():
+		prints("Pinned %d suites to shard groups: %s" % [_suite_groups.size(), " ".join(_group_names())])
 
 	var max_concurrent := _resolve_max_concurrent(shard_count)
 	if max_concurrent < shard_count:
@@ -186,21 +193,47 @@ func _discover_suites() -> Array[String]:
 	for path in _include_paths:
 		for script in scanner.scan(path):
 			var suite_path := script.resource_path
-			if not suite_path.is_empty() and not suites.has(suite_path):
-				suites.append(suite_path)
+			if suite_path.is_empty() or suites.has(suite_path):
+				continue
+			suites.append(suite_path)
+			# A suite may declare `const __shard_group := "key"` to be pinned to a single shard
+			# together with the other suites sharing that key (so they never run concurrently).
+			var group: Variant = script.get_script_constant_map().get("__shard_group", "")
+			if group is String and not (group as String).is_empty():
+				_suite_groups[suite_path] = group
 	suites.sort()
 	return suites
 
 
+func _group_names() -> Array:
+	var names: Array = []
+	for group: String in _suite_groups.values():
+		if not names.has(group):
+			names.append(group)
+	return names
+
+
 # Balances suites across shards by expected duration using a greedy longest-processing-time fit:
-# heaviest suites first, each assigned to the currently least-loaded shard. Unknown suites use the
-# average known weight, so with no history (empty weights) this degrades to a balanced-by-count split.
-func _partition(suites: Array[String], shard_count: int, weights: Dictionary) -> Array:
+# heaviest units first, each assigned to the currently least-loaded shard. Suites that share a
+# [param groups] key collapse into one unit so they always land on the same shard (never run
+# concurrently). Unknown weights use the average, so with no history this degrades to balanced-by-count.
+func _partition(suites: Array[String], shard_count: int, weights: Dictionary, groups: Dictionary) -> Array:
 	var default_weight := _average_weight(weights)
-	var order := suites.duplicate()
+	# Collapse suites into units: one unit per shard group, plus one unit per ungrouped suite.
+	var units: Dictionary = {}
+	for suite: String in suites:
+		var group := String(groups.get(suite, ""))
+		var unit_key := "group:%s" % group if not group.is_empty() else "suite:%s" % suite
+		if not units.has(unit_key):
+			units[unit_key] = {"suites": [] as Array[String], "weight": 0.0}
+		var unit: Dictionary = units[unit_key]
+		unit["suites"].append(suite)
+		unit["weight"] += float(weights.get(suite, default_weight))
+
+	var order := units.keys()
 	order.sort_custom(func(left: String, right: String) -> bool:
-		var left_weight := float(weights.get(left, default_weight))
-		var right_weight := float(weights.get(right, default_weight))
+		var left_weight: float = units[left]["weight"]
+		var right_weight: float = units[right]["weight"]
 		if left_weight != right_weight:
 			return left_weight > right_weight
 		return left < right)
@@ -210,11 +243,12 @@ func _partition(suites: Array[String], shard_count: int, weights: Dictionary) ->
 	for _index in shard_count:
 		buckets.append([] as Array[String])
 		loads.append(0.0)
-	for suite: String in order:
+	for unit_key: String in order:
 		var target := _least_loaded(loads)
 		var bucket: Array[String] = buckets[target]
-		bucket.append(suite)
-		loads[target] += float(weights.get(suite, default_weight))
+		@warning_ignore("return_value_discarded")
+		bucket.append_array(units[unit_key]["suites"])
+		loads[target] += float(units[unit_key]["weight"])
 	return buckets
 
 
