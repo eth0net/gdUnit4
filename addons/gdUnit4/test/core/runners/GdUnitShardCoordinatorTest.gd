@@ -43,6 +43,41 @@ func test_partition_keeps_shard_group_on_one_shard() -> void:
 	assert_int(shard_of["a"]).is_equal(shard_of["c"])
 
 
+#region shard groups
+func test_resolve_shard_groups_single_tag_pins_sharers() -> void:
+	var tags := {"a": ["net"], "b": ["net"], "c": ["db"]}
+	var groups := _coordinator()._resolve_shard_groups(tags)
+
+	# a and b share "net" so they collapse into one group; c is a singleton and stays free
+	assert_str(groups["a"]).is_equal(groups["b"])
+	assert_bool(groups.has("c")).is_false()
+
+
+func test_resolve_shard_groups_merges_transitively_across_tags() -> void:
+	# a bridges "db" and "net", so a, b and c all end up in one exclusion component
+	var tags := {"a": ["db", "net"], "b": ["net"], "c": ["db"], "d": ["ui"]}
+	var groups := _coordinator()._resolve_shard_groups(tags)
+
+	assert_str(groups["a"]).is_equal(groups["b"])
+	assert_str(groups["a"]).is_equal(groups["c"])
+	assert_str(groups["a"]).is_equal("db+net")
+	assert_bool(groups.has("d")).is_false()
+
+
+func test_resolve_shard_groups_keeps_disjoint_components_separate() -> void:
+	var tags := {"a": ["net"], "b": ["net"], "c": ["db"], "d": ["db"]}
+	var groups := _coordinator()._resolve_shard_groups(tags)
+
+	assert_str(groups["a"]).is_equal(groups["b"])
+	assert_str(groups["c"]).is_equal(groups["d"])
+	assert_str(groups["a"]).is_not_equal(groups["c"])
+
+
+func test_resolve_shard_groups_no_tags_is_empty() -> void:
+	assert_dict(_coordinator()._resolve_shard_groups({})).is_empty()
+#endregion
+
+
 func test_aggregate_exit_code_all_success() -> void:
 	assert_int(_coordinator()._aggregate_exit_code([0, 0, 0])).is_equal(0)
 

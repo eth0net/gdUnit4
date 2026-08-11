@@ -13,7 +13,7 @@ var _include_paths: Array[String] = []
 var _report_base := ""
 var _verbose := false
 var _headless := false
-# suite path -> shard group key; suites sharing a key are pinned to the same shard.
+# suite path -> resolved shard group key; suites sharing any tag are pinned to the same shard.
 var _suite_groups: Dictionary = {}
 
 
@@ -190,19 +190,96 @@ func _aggregate_exit_code(codes: Array[int]) -> int:
 func _discover_suites() -> Array[String]:
 	var scanner := GdUnitTestSuiteScanner.new()
 	var suites: Array[String] = []
+	var suite_tags: Dictionary = {}
 	for path in _include_paths:
 		for script in scanner.scan(path):
 			var suite_path := script.resource_path
 			if suite_path.is_empty() or suites.has(suite_path):
 				continue
 			suites.append(suite_path)
-			# A suite may declare `const __shard_group := "key"` to be pinned to a single shard
-			# together with the other suites sharing that key (so they never run concurrently).
-			var group: Variant = script.get_script_constant_map().get("__shard_group", "")
-			if group is String and not (group as String).is_empty():
-				_suite_groups[suite_path] = group
+			var tags := _read_shard_tags(script)
+			if not tags.is_empty():
+				suite_tags[suite_path] = tags
+	_suite_groups = _resolve_shard_groups(suite_tags)
 	suites.sort()
 	return suites
+
+
+# Reads a suite's `__shard_group` marker as a set of resource tags. Accepts a single String
+# (one tag, the original form) or an Array of Strings (several). Suites sharing any tag are
+# pinned to the same shard so they never run concurrently.
+func _read_shard_tags(script: Script) -> Array[String]:
+	var marker: Variant = script.get_script_constant_map().get("__shard_group", null)
+	var tags: Array[String] = []
+	if marker is String:
+		if not (marker as String).is_empty():
+			tags.append(marker)
+	elif marker is Array:
+		for tag: Variant in marker:
+			if tag is String and not (tag as String).is_empty() and not tags.has(tag):
+				tags.append(tag)
+	return tags
+
+
+# Merges suites that share any tag into exclusion components via union-find, then maps every
+# suite in a multi-suite component to a stable component key (the sorted tag union, e.g. "db+net").
+# Singleton components need no pinning and are omitted. Two distinct components can never share a
+# tag (sharing one would union them), so their tag-union keys are always distinct.
+func _resolve_shard_groups(suite_tags: Dictionary) -> Dictionary:
+	var groups: Dictionary = {}
+	if suite_tags.is_empty():
+		return groups
+	var parent: Dictionary = {}
+	for suite: String in suite_tags:
+		parent[suite] = suite
+	# Union suites via the first suite seen holding each tag (O(suites * tags per suite)).
+	var tag_owner: Dictionary = {}
+	for suite: String in suite_tags:
+		for tag: String in suite_tags[suite]:
+			if tag_owner.has(tag):
+				_union(parent, tag_owner[tag], suite)
+			else:
+				tag_owner[tag] = suite
+	# Gather each connected component's members by root.
+	var members: Dictionary = {}
+	for suite: String in suite_tags:
+		var root := _find(parent, suite)
+		if not members.has(root):
+			members[root] = [] as Array[String]
+		members[root].append(suite)
+	for root: String in members:
+		var component: Array = members[root]
+		if component.size() <= 1:
+			continue
+		var tags: Array[String] = []
+		for suite: String in component:
+			for tag: String in suite_tags[suite]:
+				if not tags.has(tag):
+					tags.append(tag)
+		tags.sort()
+		var key := "+".join(tags)
+		for suite: String in component:
+			groups[suite] = key
+	return groups
+
+
+func _find(parent: Dictionary, node: String) -> String:
+	var root: String = node
+	while parent[root] != root:
+		root = parent[root]
+	# Path compression: point every node on the path straight at the root.
+	while parent[node] != root:
+		var next: String = parent[node]
+		parent[node] = root
+		node = next
+	return root
+
+
+func _union(parent: Dictionary, left: String, right: String) -> void:
+	var left_root := _find(parent, left)
+	var right_root := _find(parent, right)
+	if left_root != right_root:
+		parent[right_root] = left_root
 
 
 func _group_names() -> Array:

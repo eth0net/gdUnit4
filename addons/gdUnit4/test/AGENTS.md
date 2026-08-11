@@ -36,6 +36,14 @@ extends GdUnitTestSuite
 const __shard_group := "net:62222"
 ```
 
+The marker can also be an **array of resource tags**. Suites that share *any* tag are merged
+into one shard, transitively — if suite A tags `["db", "net"]`, B tags `["net"]` and C tags
+`["db"]`, all three run on the same shard even though B and C share no tag directly:
+
+```gdscript
+const __shard_group := ["db", "net"]
+```
+
 This is only needed for cross-process resource clashes — in-memory state (statics, singletons,
 autoloads, ProjectSettings) is already isolated because each shard is a separate process.
 
