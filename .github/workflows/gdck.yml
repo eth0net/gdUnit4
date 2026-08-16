@@ -1,0 +1,56 @@
+name: gdck
+
+run-name: ${{ github.head_ref || github.ref_name }}-gdck
+
+on: # yamllint disable-line rule:truthy
+  push:
+    paths:
+      - 'addons/gdUnit4/**/*.gd'
+      - 'gdck.toml'
+      - '.github/workflows/gdck.yml'
+  pull_request:
+    paths:
+      - 'addons/gdUnit4/**/*.gd'
+      - 'gdck.toml'
+      - '.github/workflows/gdck.yml'
+  workflow_dispatch:
+
+jobs:
+  gdck:
+    name: '📝 gdck lint'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout GdUnit Repository
+        uses: actions/checkout@v7
+
+      - name: Install gdck
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/eth0net/gdck/releases/download/v0.5.1/gdck-installer.sh | sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Run gdck lint
+        id: run-gdck
+        shell: bash
+        run: |
+          mkdir -p reports/gdck/
+          gdck --version
+          gdck lint --config gdck.toml \
+            addons/gdUnit4/bin \
+            addons/gdUnit4/src/cmd \
+            addons/gdUnit4/src/reporters \
+            addons/gdUnit4/src/network \
+            addons/gdUnit4/src/asserts \
+            | tee reports/gdck/gdck.txt
+
+      - name: Upload gdck Report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdck.txt
+          path: reports/gdck/**
+          if-no-files-found: error
+          compression-level: 0 # no compression
