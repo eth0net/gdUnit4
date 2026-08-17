@@ -46,6 +46,11 @@ func run_and_wait(tests: Array[GdUnitTestCase]) -> void:
 			context.test_suite = test_suite
 			(Engine.get_main_loop() as SceneTree).root.add_child(test_suite)
 			await _executeStage.execute(context)
+			# Let the final `test_completed` signal emission fully unwind before we free
+			# the suite node in dispose(); otherwise the node is freed mid-emit (see
+			# object.cpp `~Object`). Freeing synchronously here keeps orphan accounting
+			# accurate, unlike a deferred queue_free().
+			await (Engine.get_main_loop() as SceneTree).process_frame
 			context.dispose()
 		else:
 			await GdUnit4CSharpApiLoader.execute(suite_tests)
